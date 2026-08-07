@@ -10,6 +10,13 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Tipo di build" FORCE)
 endif()
 
+# Genera compile_commands.json: e' il file da cui l'editor (IntelliSense di
+# VS Code, clangd, ...) ricava gli include path veri, invece di indovinarli.
+# Senza, tutti gli #include di pico/*, hardware/*, ff.h e mp3dec.h risultano
+# "non trovati" nell'editor pur compilando benissimo.
+# tools/build.sh lo copia poi nella radice del progetto.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # --- Pico SDK ---------------------------------------------------------------
 include(pico_sdk_import.cmake)
 

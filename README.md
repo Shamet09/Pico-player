@@ -300,6 +300,35 @@ chiavetta `RPI-RP2` che compare.
 ./test/run_tests.sh           # gcc di sistema, niente toolchain ARM
 ```
 
+### Editor: far sparire gli #include sottolineati in rosso
+
+Gli include di `pico/*`, `hardware/*`, `ff.h` e `mp3dec.h` non si risolvono da
+soli in un editor: i primi due stanno fuori dal repository (SDK e pico-extras),
+gli altri in sottocartelle di `lib/` note solo a CMake, e alcuni header
+(`pico/config_autogen.h`, `pico/version.h`) **non esistono affatto** finche' non
+si compila, perche' li genera CMake nella directory di build.
+
+La build produce quindi un `compile_commands.json`, che `tools/build.sh` copia
+nella radice del progetto: e' da li' che l'editor ricava gli include path veri
+invece di indovinarli.
+
+```bash
+./tools/build.sh        # genera/aggiorna compile_commands.json
+```
+
+`.vscode/c_cpp_properties.json` e' gia' configurato per leggerlo. Va usato
+**aprendo la cartella in modalita' WSL** (estensione *WSL* di Microsoft, comando
+"Connect to WSL"): i percorsi dentro `compile_commands.json` sono percorsi
+Linux, quindi un VS Code che gira su Windows non li segue.
+
+C'e' anche una configurazione di ripiego `PicoPlayer (Windows, ripiego)` che usa
+percorsi `\\wsl.localhost\...`: funziona senza modalita' WSL, ma **contiene il
+nome utente e il nome della distro**, quindi va adattata a mano su un'altra
+macchina. Si sceglie dalla barra di stato in basso a destra di VS Code.
+
+`compile_commands.json` e' in `.gitignore`: contiene percorsi assoluti della
+macchina su cui e' stato compilato, va rigenerato in locale.
+
 ---
 
 ## 6. Struttura dei file

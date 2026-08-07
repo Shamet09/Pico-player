@@ -58,5 +58,13 @@ if [ -n "$COPY_BACK" ]; then
     ls -la "$COPY_BACK"
 fi
 
+# compile_commands.json nella radice del progetto: e' li' che lo cerca
+# .vscode/c_cpp_properties.json. Contiene percorsi assoluti, quindi va
+# rigenerato ad ogni build (ed e' giustamente in .gitignore).
+if [ -f "$BUILD_DIR/compile_commands.json" ]; then
+    cp -f "$BUILD_DIR/compile_commands.json" "$ROOT/compile_commands.json"
+    echo "compile_commands.json aggiornato in $ROOT"
+fi
+
 echo
 arm-none-eabi-size "$BUILD_DIR/picoplayer.elf"

@@ -1,0 +1,47 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "PicoPlayer (WSL / Linux)",
+            "compileCommands": "${workspaceFolder}/compile_commands.json",
+            "compilerPath": "/usr/bin/arm-none-eabi-gcc",
+            "intelliSenseMode": "linux-gcc-arm",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/lib/helix",
+                "${workspaceFolder}/lib/fatfs_spi/ff15/source",
+                "${workspaceFolder}/lib/fatfs_spi/sd_driver",
+                "${workspaceFolder}/lib/fatfs_spi/include"
+            ]
+        },
+        {
+            "name": "PicoPlayer (Windows, ripiego)",
+            "compilerPath": "",
+            "intelliSenseMode": "windows-gcc-arm",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/lib/helix",
+                "${workspaceFolder}/lib/fatfs_spi/ff15/source",
+                "${workspaceFolder}/lib/fatfs_spi/sd_driver",
+                "${workspaceFolder}/lib/fatfs_spi/include",
+                "//wsl.localhost/Ubuntu/opt/pico/pico-sdk/src/common/**",
+                "//wsl.localhost/Ubuntu/opt/pico/pico-sdk/src/rp2_common/**",
+                "//wsl.localhost/Ubuntu/opt/pico/pico-sdk/src/rp2040/**",
+                "//wsl.localhost/Ubuntu/opt/pico/pico-sdk/src/boards/include",
+                "//wsl.localhost/Ubuntu/opt/pico/pico-extras/src/common/**",
+                "//wsl.localhost/Ubuntu/opt/pico/pico-extras/src/rp2_common/**",
+                "//wsl.localhost/Ubuntu/home/shamet/.cache/picoplayer-build/generated/pico_base"
+            ],
+            "defines": [
+                "PICO_RP2040=1",
+                "PICO_ON_DEVICE=1",
+                "PICO_NO_HARDWARE=0",
+                "__arm__"
+            ]
+        }
+    ]
+}

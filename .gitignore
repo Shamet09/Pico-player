@@ -7,6 +7,10 @@ PicoPlayer_Prompt_ClaudeCode.docx
 # Artefatti di build
 build/
 test/build/
+
+# Rigenerato ad ogni build da tools/build.sh, contiene percorsi assoluti
+# della macchina su cui e' stato compilato: non va condiviso.
+compile_commands.json
 *.o
 *.elf
 *.bin
