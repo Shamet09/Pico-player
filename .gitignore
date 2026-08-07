@@ -1,0 +1,15 @@
+# Documento di specifica originale: resta qui in locale come riferimento
+# (la sezione 8 del README ne discute gli scostamenti) ma non va pubblicato.
+PicoPlayer_Prompt_ClaudeCode.docx
+*.docx
+
+# Artefatti di build
+build/
+test/build/
+*.o
+*.elf
+*.bin
+*.uf2
+*.dis
+*.map
+__pycache__/

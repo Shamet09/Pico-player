@@ -1,0 +1,14 @@
+# Normalizzazione a LF nel repository.
+* text=auto
+
+# Gli script vengono eseguiti da bash (WSL o Linux): con fine riga CRLF
+# fallirebbero subito con "bad interpreter: /bin/bash^M".
+*.sh  text eol=lf
+*.py  text eol=lf
+
+# Binari: nessuna conversione.
+*.png  binary
+*.docx binary
+*.uf2  binary
+*.bin  binary
+*.elf  binary
