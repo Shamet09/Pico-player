@@ -8,6 +8,11 @@ Filosofia: **semplice, veloce, facile da usare, facile da mantenere.** Dove una
 funzionalita' complicava l'interfaccia senza aggiungere valore vero, non e'
 stata implementata.
 
+> **Prima volta?** [GUIDA_DA_ZERO.docx](GUIDA_DA_ZERO.docx) e' una guida passo
+> passo per principianti: da un PC appena formattato fino al Pico che suona,
+> compresa la preparazione della microSD e cosa fare se qualcosa non va.
+> Questo README e' invece la documentazione tecnica del progetto.
+
 ---
 
 ## 1. Hardware e piedinatura

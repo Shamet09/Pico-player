@@ -1,7 +1,8 @@
 # Documento di specifica originale: resta qui in locale come riferimento
 # (la sezione 8 del README ne discute gli scostamenti) ma non va pubblicato.
+# Nota: si ignora SOLO questo file, non tutti i .docx, altrimenti verrebbe
+# esclusa anche GUIDA_DA_ZERO.docx, che invece fa parte del progetto.
 PicoPlayer_Prompt_ClaudeCode.docx
-*.docx
 
 # Artefatti di build
 build/
