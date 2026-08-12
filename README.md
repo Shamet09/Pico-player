@@ -31,6 +31,7 @@ Tutti i numeri qui sotto vivono in un solo posto nel codice: [src/config.h](src/
 | DAC PCM5102 (I2S) | LCK | GP15 | = BCK + 1, richiesto da `pico_audio_i2s` |
 | DAC PCM5102 (I2S) | DIN | GP16 | |
 | DAC PCM5102 | SCK (del DAC) | **GND** | modalita' clock interno, non e' un GPIO |
+| DAC PCM5102 | **XSMT** | **3V3** | vedi sotto: se resta basso il DAC e' muto |
 | Pulsante LEFT | | GP18 | usato |
 | Pulsante RIGHT | | GP19 | usato |
 | Pulsante UP | | GP20 | cablato ma non usato |
@@ -41,6 +42,27 @@ Tutti i numeri qui sotto vivono in un solo posto nel codice: [src/config.h](src/
 | Debug seriale (opz.) | UART0 TX / RX | GP12 / GP13 | 115200 8N1 |
 
 I pulsanti sono attivi bassi con pull-up interno: un capo al GPIO, l'altro a GND.
+
+### XSMT: il pin che non c'era nel progetto e senza cui non si sente niente
+
+Il modulo usato e' un **GY-PCM5102A** (la scheda viola). Oltre ai sei pin del
+connettore in alto (VIN, GND, LCK, DIN, BCK, SCK) ha una fila di piazzole sul
+retro: `FLT`, `DEMP`, `XSMT`, `FMT`, `A3V3`, `AGND`, `ROUT`, `AGND`, `LROUT`.
+
+`XSMT` e' il **soft mute** del PCM5102A: a livello basso il chip non emette
+nulla, senza nessun altro sintomo — l'I2S continua a girare, il player continua
+a suonare, semplicemente non esce audio. Il PCM5102A **non ha pull-up interni**
+su questo pin, quindi lasciato flottante il risultato e' indeterminato e in
+pratica tende al basso.
+
+Sul retro ci sono anche quattro ponticelli a saldare, `H1L`..`H4L`, che
+servirebbero a portare alto o basso rispettivamente FLT, DEMP, XSMT e FMT. Se
+non sono stati saldati (com'e' spesso di fabbrica) i quattro pin sono liberi.
+
+**La soluzione piu' semplice e reversibile e' un filo dalla piazzola `XSMT` a
+3V3**, senza toccare i ponticelli: la piazzola e' grande, etichettata e non
+ambigua. Gli altri tre pin (FLT, DEMP, FMT) vanno bene bassi o flottanti, e in
+pratica non danno problemi.
 
 **Perche' la seriale non e' su GP0/GP1** (dove il Pico SDK la mette di default):
 quei pin sono occupati dall'I2C dell'OLED. E' stata spostata su GP12/GP13, che
@@ -372,14 +394,33 @@ tools/
 
 ## 7. Diagnostica: se qualcosa non funziona
 
-### La seriale e' il primo posto dove guardare
+### Il log e' il primo posto dove guardare
 
-UART0 su **GP12 (TX) / GP13 (RX), 115200 8N1**. Il firmware racconta cosa sta
-facendo: clock di sistema e baud rate della SD, esito dell'init audio, esito
-del mount, quante playlist ha trovato, ogni brano aperto con frequenza /
-canali / bitrate / durata, e ogni errore di lettura con il codice FatFs.
-Con un adattatore USB-seriale da pochi euro la maggior parte dei dubbi si
-risolve in trenta secondi.
+Il firmware racconta cosa sta facendo: clock di sistema e baud rate della SD,
+esito dell'init audio, esito del mount, quante playlist ha trovato, ogni brano
+aperto con frequenza / canali / bitrate / durata, e ogni errore di lettura con
+il codice FatFs. Si legge in due modi, attivi contemporaneamente:
+
+**Via USB, con PuTTY, senza comprare niente.** Il Pico collegato al PC con lo
+stesso cavo con cui lo si flasha compare come porta COM (Gestione dispositivi →
+Porte). In PuTTY: *Connection type: Serial*, *Serial line* `COMx`, *Speed*
+`115200`. La velocita' in realta' e' irrilevante su USB CDC, ma PuTTY la vuole
+comunque.
+
+Perche' funzioni serve il submodule `tinyusb` del Pico SDK, che in un SDK
+appena clonato non c'e'. Una volta sola:
+
+```bash
+sudo git -C "$PICO_SDK_PATH" submodule update --init lib/tinyusb
+./tools/build.sh
+```
+
+CMake se ne accorge da solo e stampa `PicoPlayer: tinyusb trovato, stdio anche
+su USB`. Se il submodule non c'e' la build non fallisce: resta solo la UART.
+Costo del supporto USB: ~14 KB di flash e ~2 KB di RAM.
+
+**Via UART**, se si preferisce: **GP12 (TX) / GP13 (RX), 115200 8N1**, con un
+adattatore USB-seriale.
 
 ### Modo test audio: tenere premuto MENU all'accensione
 
@@ -394,13 +435,19 @@ comunque il volume. Serve a separare due guasti che dall'esterno si somigliano:
 
 ### Il DAC non suona
 
+**Prima domanda: il contatore del tempo avanza?** Se avanza in tempo reale (un
+brano da 3:45 dura davvero 3:45) allora PIO, DMA e I2S stanno funzionando: se
+i buffer non venissero consumati dal DMA, `feed_i2s` non troverebbe piu' spazio
+e il contatore si fermerebbe. Contatore che avanza = i dati escono davvero da
+GP16, e il guasto e' per forza a valle del Pico.
+
 Nell'ordine di probabilita':
 
-1. **XSMT del PCM5102 deve stare ALTO.** E' il pin di *soft mute*: se resta
-   basso il chip non emette assolutamente nulla, senza nessun altro sintomo.
-   Sui moduli GY-PCM5102 (quelli viola) si decide con i quattro ponticelli a
-   saldare sul retro: **FLT=L, DEMP=L, XSMT=H, FMT=L**. E' di gran lunga la
-   causa numero uno di "PCM5102 muto".
+1. **XSMT deve stare ALTO** — vedi la sezione 1. E' di gran lunga la causa
+   numero uno di "PCM5102 muto", e non era previsto nel documento di progetto
+   originale, quindi e' facile che non sia mai stato cablato. Un filo dalla
+   piazzola `XSMT` a 3V3. Con un tester: a riposo dovrebbe leggere ~3,3 V; se
+   legge ~0 V, e' quello.
 2. **SCK del DAC a GND**, non a un GPIO: e' quello che seleziona il clock
    interno. Lasciato flottante il DAC non aggancia.
 3. **BCK e LCK invertiti.** Devono essere BCK=GP14 e LCK=GP15, in quest'ordine

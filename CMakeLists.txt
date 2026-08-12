@@ -117,7 +117,6 @@ target_link_libraries(picoplayer
 
 # stdio su UART0, ma spostata su GP12/GP13: i pin di default (GP0/GP1) qui
 # sono occupati dall'I2C dell'OLED.
-# USB e' disattivato di proposito: richiederebbe il submodule tinyusb del SDK.
 target_compile_definitions(picoplayer PRIVATE
     PICO_DEFAULT_UART=0
     PICO_DEFAULT_UART_TX_PIN=12
@@ -132,7 +131,50 @@ target_compile_definitions(picoplayer PRIVATE
     PICO_CORE1_STACK_SIZE=4096
 )
 pico_enable_stdio_uart(picoplayer 1)
-pico_enable_stdio_usb(picoplayer 0)
+
+# stdio anche su USB, se il submodule tinyusb del SDK e' disponibile.
+#
+# Con questo il Pico, collegato al PC con lo stesso cavo con cui lo si flasha,
+# compare come porta COM: il log si legge con PuTTY (o qualunque terminale
+# seriale) senza bisogno di un adattatore USB-seriale. Non sostituisce la UART
+# su GP12/GP13: sono attive entrambe e stampano le stesse cose.
+#
+# L'attivazione e' automatica ma condizionata, non obbligatoria: tinyusb e' un
+# submodule che nel SDK appena clonato NON c'e'. Renderlo obbligatorio
+# spaccherebbe la build su una macchina pulita, e questo firmware deve
+# compilare al primo colpo. Per abilitarlo:
+#
+#     sudo git -C "$PICO_SDK_PATH" submodule update --init lib/tinyusb
+#
+# e ricompilare (CMake se ne accorge da solo).
+if(NOT PICO_TINYUSB_PATH)
+    set(PICO_TINYUSB_PATH ${PICO_SDK_PATH}/lib/tinyusb)
+endif()
+if(EXISTS ${PICO_TINYUSB_PATH}/src/tusb.h)
+    message(STATUS "PicoPlayer: tinyusb trovato, stdio anche su USB (porta COM).")
+    pico_enable_stdio_usb(picoplayer 1)
+    target_compile_definitions(picoplayer PRIVATE
+        # Non aspettare che qualcuno apra il terminale. E' gia' il default del
+        # SDK, ma qui e' un requisito: alimentato da un caricabatterie invece
+        # che dal PC, il player non deve restare fermo ad aspettare una
+        # connessione che non arrivera' mai.
+        PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=0
+
+        # Quanto puo' bloccarsi una printf se il terminale e' aperto ma non
+        # sta leggendo. Il default del SDK e' mezzo secondo: siccome le printf
+        # partono anche da core1, mezzo secondo di stallo li' significa audio
+        # muto per mezzo secondo (i buffer coprono ~104 ms). Con 20 ms il log
+        # perde qualche carattere in un caso patologico, ma la riproduzione
+        # non se ne accorge.
+        PICO_STDIO_USB_STDOUT_TIMEOUT_US=20000
+    )
+else()
+    message(STATUS
+        "PicoPlayer: tinyusb assente, stdio solo su UART (GP12/GP13). "
+        "Per leggere il log via USB con PuTTY: "
+        "sudo git -C ${PICO_SDK_PATH} submodule update --init lib/tinyusb")
+    pico_enable_stdio_usb(picoplayer 0)
+endif()
 
 pico_set_program_name(picoplayer "PicoPlayer")
 pico_set_program_description(picoplayer "Lettore MP3 portatile su RP2040")
