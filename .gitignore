@@ -1,8 +1,17 @@
 # Documento di specifica originale: resta qui in locale come riferimento
-# (la sezione 8 del README ne discute gli scostamenti) ma non va pubblicato.
+# (la sezione 9 del README ne discute gli scostamenti) ma non va pubblicato.
 # Nota: si ignora SOLO questo file, non tutti i .docx, altrimenti verrebbe
 # esclusa anche GUIDA_DA_ZERO.docx, che invece fa parte del progetto.
 PicoPlayer_Prompt_ClaudeCode.docx
+
+# Appunti di lavoro locali: stato della diagnosi in corso, da riprendere nella
+# sessione successiva. Non sono documentazione del progetto e non vanno
+# pubblicati.
+RIPRESA_DOMANI.md
+
+# Foto dell'hardware scambiate durante la diagnosi: utili in locale, ma sono
+# alcuni MB e non fanno parte del progetto.
+DAC_*.jpg
 
 # Artefatti di build
 build/
