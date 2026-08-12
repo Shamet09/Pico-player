@@ -235,6 +235,11 @@ rilasciato dalla sua ISR.
   applicato con uno shift a 8 bit nel loop di copia. Nessuna divisione per
   campione.
 * **Fine playlist**: si riparte automaticamente dal primo brano (loop semplice).
+* **Errori di lettura**: un errore di I/O non viene confuso con una fine brano.
+  La lettura viene ritentata, e se non basta la scheda viene rimontata forzando
+  `STA_NOINIT` (senza, `sd_init()` esce subito e la card resta nello stato
+  sporco in cui l'errore l'ha lasciata) e il brano riprende dal punto esatto.
+  Dettagli e cosa fare se succede spesso: sezione 7.
 * **Shuffle**: permutazione Fisher-Yates. Attivandolo a meta' riproduzione la
   canzone corrente resta in prima posizione, cosi' non si interrompe quello che
   si sta ascoltando. Disattivandolo si torna all'ordine alfabetico,
@@ -242,7 +247,7 @@ rilasciato dalla sua ISR.
 
 ### Occupazione di memoria
 
-Dal `.elf` compilato: **136,5 KB di flash**, **36,6 KB di .bss**. A runtime si
+Dal `.elf` compilato: **136 KB di flash**, **35,8 KB di .bss**. A runtime si
 aggiungono circa 30 KB di heap per i buffer del decoder Helix e circa 20 KB per
 i buffer audio, allocati una sola volta all'avvio: **durante la riproduzione non
 c'e' nessuna allocazione dinamica.** Totale ~87 KB dei 264 KB dell'RP2040.
@@ -365,7 +370,70 @@ tools/
 
 ---
 
-## 7. Cosa e' verificato e cosa no
+## 7. Diagnostica: se qualcosa non funziona
+
+### La seriale e' il primo posto dove guardare
+
+UART0 su **GP12 (TX) / GP13 (RX), 115200 8N1**. Il firmware racconta cosa sta
+facendo: clock di sistema e baud rate della SD, esito dell'init audio, esito
+del mount, quante playlist ha trovato, ogni brano aperto con frequenza /
+canali / bitrate / durata, e ogni errore di lettura con il codice FatFs.
+Con un adattatore USB-seriale da pochi euro la maggior parte dei dubbi si
+risolve in trenta secondi.
+
+### Modo test audio: tenere premuto MENU all'accensione
+
+Il firmware **non tocca la microSD e non decodifica niente**: manda all'I2S un
+tono continuo a 440 Hz. Il display scrive `TEST AUDIO`. LEFT/RIGHT regolano
+comunque il volume. Serve a separare due guasti che dall'esterno si somigliano:
+
+| Esito | Cosa vuol dire |
+|---|---|
+| **Il tono si sente** | PIO, DMA, I2S e DAC funzionano. Il problema e' a monte: microSD, decodifica, catena dei buffer. |
+| **Il tono non si sente** | Il problema e' a valle del Pico: cablaggio, alimentazione o configurazione del DAC. |
+
+### Il DAC non suona
+
+Nell'ordine di probabilita':
+
+1. **XSMT del PCM5102 deve stare ALTO.** E' il pin di *soft mute*: se resta
+   basso il chip non emette assolutamente nulla, senza nessun altro sintomo.
+   Sui moduli GY-PCM5102 (quelli viola) si decide con i quattro ponticelli a
+   saldare sul retro: **FLT=L, DEMP=L, XSMT=H, FMT=L**. E' di gran lunga la
+   causa numero uno di "PCM5102 muto".
+2. **SCK del DAC a GND**, non a un GPIO: e' quello che seleziona il clock
+   interno. Lasciato flottante il DAC non aggancia.
+3. **BCK e LCK invertiti.** Devono essere BCK=GP14 e LCK=GP15, in quest'ordine
+   (`clock_pin_base` e `clock_pin_base + 1`). Se sulla scheda sono al
+   contrario, invece di rifare il cablaggio si puo' compilare con
+   `-DPICO_AUDIO_I2S_CLOCK_PINS_SWAPPED=1`.
+4. Alimentazione del DAC: 3,3 V stabili e massa in comune con il Pico.
+
+### La microSD smette di rispondere dopo un po'
+
+E' il sintomo classico di un collegamento SPI al limite: cavetti lunghi,
+breadboard, massa lunga. Il driver ha il CRC attivo, quindi il disturbo viene
+rilevato e la lettura fallisce — in modo apparentemente casuale, anche dopo
+minuti che tutto andava bene.
+
+Il firmware ora **si riprende da solo**: distingue un errore di I/O da una fine
+brano, ritenta la lettura, e se serve rimonta la scheda forzando una
+reinizializzazione completa e riprende il brano dal punto esatto in cui si era
+interrotto. Se la scheda proprio non torna, mette in pausa, scrive
+`SD assente o non leggibile` sul display e continua a ritentare ogni 2 secondi:
+appena la SD torna, riparte da sola. (Prima un singolo disturbo la lasciava
+morta fino al reboot, con `0:00 / 0:00` sul display e i tasti che non
+skippavano piu'.)
+
+Se succede spesso, in `config.h`:
+
+* `SD_BAUD_RATE` — 6,25 MHz e' il valore attuale; scendere a `(4000 * 1000)`.
+* accorciare i cavi, usare una massa dedicata, mettere un 100 nF
+  sull'alimentazione del modulo SD.
+
+---
+
+## 8. Cosa e' verificato e cosa no
 
 ### Verificato automaticamente
 
@@ -393,7 +461,7 @@ tools/
   memoria: `audio_i2s_config_t`, `audio_new_producer_pool`, `audio_buffer_t`,
   `mp3dec.h`, `spi_t`/`sd_card_t`, `ffconf.h`. Da questa verifica sono usciti
   quattro problemi reali che sarebbero stati bug al primo avvio, elencati nella
-  sezione 8.
+  sezione 9.
 * **Un solo core chiama FatFs**: verificato meccanicamente che nessun `f_*`
   compaia fuori da `playlist.c` e `player.c`, che girano solo su core1.
 
@@ -414,14 +482,15 @@ Nessuna di queste cose e' verificabile senza il dispositivo montato:
 * **Timing dei pulsanti come lo percepisce il dito.** Le soglie sono verificate
   matematicamente dagli unit test, ma se l'hold sembra troppo pronto o troppo
   lento sono quattro costanti in `config.h`.
-* **Lettura della microSD**: velocita' SPI (12,5 MHz), qualita' del cablaggio e
-  della scheda. Se il mount fallisce, provare ad abbassare `SD_BAUD_RATE`.
+* **Lettura della microSD**: velocita' SPI (6,25 MHz), qualita' del cablaggio e
+  della scheda. Vedi la sezione 7 per il recupero automatico dagli errori e
+  cosa fare se non basta.
 * **Corrispondenza L/R del DAC** e livello di uscita.
 * **Autonomia della batteria** e comportamento del modulo IP5306 sotto carico.
 
 ---
 
-## 8. Scelte tecniche e scostamenti dal documento di progetto
+## 9. Scelte tecniche e scostamenti dal documento di progetto
 
 Il documento chiedeva di seguirlo alla lettera, salvo verificare gli header
 reali quando qualcosa non combaciava. La verifica ha fatto emergere quattro

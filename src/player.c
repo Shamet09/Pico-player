@@ -10,8 +10,10 @@
 #include "pico/time.h"
 
 #include "ff.h"
+#include "diskio.h"      /* STA_NOINIT: usa i typedef di ff.h, va dopo */
 #include "hw_config.h"
 #include "mp3dec.h"
+#include "sd_card.h"
 #include "spi.h"
 
 #include "config.h"
@@ -58,6 +60,25 @@ static play_order_t s_order;
 static int          s_playlist_index;
 static bool         s_playing;
 static bool         s_have_track;
+
+/* Stato della microSD.
+ *
+ * s_io_error e' volutamente FUORI da s_track: close_track() azzera la struct,
+ * e l'informazione "la scheda ha fatto i capricci" deve sopravvivere alla
+ * chiusura del brano, altrimenti un errore di lettura e' indistinguibile da
+ * una canzone finita -- che era esattamente il bug: un singolo disturbo sulla
+ * SPI faceva credere al player di essere a fine brano, poi fallivano anche
+ * tutte le aperture successive e il player restava morto fino al reboot. */
+static bool           s_io_error;
+static sd_status_t    s_sd_status = SD_STATUS_UNKNOWN;
+static bool           s_ready;
+static absolute_time_t s_next_recover;
+
+/* Dichiarazioni anticipate: il recupero della SD sta vicino a do_seek (di cui
+ * si serve) ma usa anche funzioni definite piu' in basso. */
+static void scan_playlists(void);
+static void flush_i2s(void);
+static void set_playing(bool on);
 
 /* ------------------------------------------------------------------ */
 /* Utilita'                                                            */
@@ -116,8 +137,12 @@ static bool in_refill(void)
     }
     /* compatta: sposta i byte non consumati all'inizio */
     if (s_in_pos > 0) {
-        memmove(s_in, s_in + s_in_pos, (size_t)(s_in_len - s_in_pos));
-        s_in_len -= s_in_pos;
+        int keep = s_in_len - s_in_pos;
+        if (keep < 0) {
+            keep = 0;    /* difesa: vedi il clamp in decode_frame */
+        }
+        memmove(s_in, s_in + s_in_pos, (size_t)keep);
+        s_in_len = keep;
         s_in_pos = 0;
     }
     int space = MP3_INBUF_SIZE - s_in_len;
@@ -125,16 +150,30 @@ static bool in_refill(void)
         return false;
     }
     int want = space > SD_READ_CHUNK ? SD_READ_CHUNK : space;
-    if (f_read(&s_track.f, s_in + s_in_len, (UINT)want, &br) != FR_OK) {
-        s_track.eof = true;
-        return false;
+
+    /* Un errore di lettura NON e' una fine file. Prima ritentiamo lo stesso
+     * blocco riportando indietro il puntatore (un disturbo sulla SPI e' quasi
+     * sempre transitorio), e solo se insiste alziamo s_io_error: sara' il loop
+     * principale a tentare il recupero vero della scheda. */
+    FSIZE_t pos = f_tell(&s_track.f);
+    for (int attempt = 0; attempt < SD_IO_RETRIES; attempt++) {
+        FRESULT fr = f_read(&s_track.f, s_in + s_in_len, (UINT)want, &br);
+        if (fr == FR_OK) {
+            if (br == 0) {
+                s_track.eof = true;
+                return false;
+            }
+            s_in_len += (int)br;
+            return true;
+        }
+        printf("f_read errore %d (tentativo %d/%d)\n",
+               (int)fr, attempt + 1, SD_IO_RETRIES);
+        if (f_lseek(&s_track.f, pos) != FR_OK) {
+            break;
+        }
     }
-    if (br == 0) {
-        s_track.eof = true;
-        return false;
-    }
-    s_in_len += (int)br;
-    return true;
+    s_io_error = true;
+    return false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -173,8 +212,17 @@ static int decode_frame(MP3FrameInfo *fi)
 
         /* `rp` e' l'unico riferimento affidabile: in alcuni percorsi d'errore
          * Helix avanza il puntatore senza aggiornare bytes_left, quindi la
-         * posizione la ricalcoliamo sempre da qui. */
+         * posizione la ricalcoliamo sempre da qui. Il clamp e' cintura di
+         * sicurezza: se rp finisse fuori dai dati validi, s_in_len - s_in_pos
+         * diventerebbe negativo e la memmove di in_refill riceverebbe una
+         * lunghezza enorme (size_t), devastando la RAM. */
         int consumed_to = (int)(rp - s_in);
+        if (consumed_to < sync_abs) {
+            consumed_to = sync_abs;
+        }
+        if (consumed_to > s_in_len) {
+            consumed_to = s_in_len;
+        }
 
         if (err == ERR_MP3_NONE) {
             s_in_pos = consumed_to;
@@ -255,8 +303,15 @@ static bool open_track(uint16_t track_idx)
                         g_shared.playlist_names[s_playlist_index],
                         g_shared.track_names[track_idx]);
 
-    if (f_open(&s_track.f, path, FA_READ) != FR_OK) {
-        printf("apertura fallita: %s\n", path);
+    FRESULT fr = f_open(&s_track.f, path, FA_READ);
+    if (fr != FR_OK) {
+        printf("apertura fallita (%d): %s\n", (int)fr, path);
+        /* Distinguiamo "questo file non va" da "la scheda non risponde": nel
+         * primo caso ha senso passare al brano successivo, nel secondo no --
+         * proveremmo 200 file inutilmente, ognuno con il suo timeout. */
+        if (fr == FR_DISK_ERR || fr == FR_NOT_READY || fr == FR_INT_ERR) {
+            s_io_error = true;
+        }
         return false;
     }
     s_track.open = true;
@@ -298,17 +353,32 @@ static bool open_track(uint16_t track_idx)
 
     i2s_set_rate(s_track.samprate);
     s_have_track = true;
+
+    printf("brano: %s (%lu Hz, %d ch, %lu kbps, ~%lu s)\n", path,
+           (unsigned long)s_track.samprate, s_track.channels,
+           (unsigned long)(s_track.bitrate / 1000),
+           (unsigned long)s_track.duration_sec);
     return true;
 }
 
 /* Apre il brano corrente dell'ordine di riproduzione; se fallisce prova i
- * successivi (file corrotto o rimosso) invece di bloccarsi. */
+ * successivi (file corrotto o rimosso) invece di bloccarsi.
+ *
+ * Il numero di tentativi e' limitato: con la scheda guasta ogni f_open puo'
+ * costare fino a un secondo di timeout, e provarle tutte terrebbe il player
+ * fermo per minuti. Se il problema e' la SD se ne accorge s_io_error e ci
+ * pensa il recupero. */
 static bool open_current_or_next(void)
 {
-    uint16_t n = g_shared.track_count;
-    for (uint16_t i = 0; i < n; i++) {
+    uint16_t n     = g_shared.track_count;
+    uint16_t limit = (n < SD_OPEN_TRIES) ? n : (uint16_t)SD_OPEN_TRIES;
+
+    for (uint16_t i = 0; i < limit; i++) {
         if (open_track(play_order_current(&s_order))) {
             return true;
+        }
+        if (s_io_error) {
+            return false;      /* non e' il file: e' la scheda */
         }
         play_order_next(&s_order);
     }
@@ -384,6 +454,97 @@ static void do_seek(int32_t delta_sec)
     s_track.samples_played = (uint64_t)target * s_track.samprate;
 }
 
+/* ------------------------------------------------------------------ */
+/* Recupero dagli errori della microSD                                 */
+/* ------------------------------------------------------------------ */
+
+/* Smonta e rimonta la scheda forzando una reinizializzazione completa.
+ *
+ * Il solo f_mount non basta: sd_init() esce subito se STA_NOINIT e' gia'
+ * pulito, quindi la card resterebbe nello stato sporco in cui l'errore l'ha
+ * lasciata (tipicamente a meta' di un trasferimento dati, con lo stream SPI
+ * fuori sincrono). Alzando STA_NOINIT il driver rifa' CMD0/CMD8/ACMD41 da
+ * capo, che e' l'unico modo affidabile per rimetterla in riga. */
+static bool sd_remount(void)
+{
+    playlist_unmount();
+
+    sd_card_t *sd = sd_get_by_num(0);
+    if (sd) {
+        sd->m_Status |= STA_NOINIT;
+    }
+    return playlist_mount();
+}
+
+/* Rimonta la scheda e riprende il brano corrente dal punto in cui si era
+ * interrotto. Ritorna false se la SD non e' tornata. */
+static bool recover_track(void)
+{
+    uint16_t idx    = play_order_current(&s_order);
+    uint32_t resume = track_elapsed_sec();
+
+    close_track();
+    s_io_error = false;
+
+    if (!sd_remount()) {
+        printf("recupero SD: rimontaggio fallito\n");
+        return false;
+    }
+    if (!open_track(idx)) {
+        printf("recupero SD: riapertura del brano fallita\n");
+        return false;
+    }
+    if (resume > 0) {
+        /* do_seek e' relativo al tempo trascorso, che dopo la riapertura e' 0:
+         * passare `resume` ci riporta esattamente dov'eravamo. */
+        do_seek((int32_t)resume);
+    }
+    printf("recupero SD riuscito, riprendo da %lu s\n", (unsigned long)resume);
+    return true;
+}
+
+/* Recupero completo, per quando non c'e' piu' nemmeno un brano aperto:
+ * rimonta, riscansiona e ricarica la playlist. */
+static bool recover_full(void)
+{
+    close_track();
+    s_io_error = false;
+
+    if (!sd_remount()) {
+        return false;
+    }
+    scan_playlists();
+    if (g_shared.playlist_count == 0) {
+        return false;
+    }
+    int idx = (s_playlist_index >= 0 &&
+               s_playlist_index < (int)g_shared.playlist_count)
+              ? s_playlist_index : 0;
+    load_playlist(idx);
+    return s_have_track;
+}
+
+/* Chiamata quando la SD ha smesso di rispondere durante la riproduzione. */
+static void on_io_error(void)
+{
+    flush_i2s();
+
+    if (recover_track()) {
+        s_sd_status = SD_STATUS_OK;
+        return;
+    }
+
+    /* Non ci arrendiamo per sempre: mettiamo in pausa, segnaliamo l'errore
+     * sul display e continuiamo a ritentare dal loop principale. Se la scheda
+     * torna (contatto, alimentazione) il player riparte da solo. */
+    printf("SD non recuperabile per ora, riprovo fra %d ms\n", SD_RECOVER_MS);
+    s_sd_status    = SD_STATUS_ERROR;
+    s_next_recover = make_timeout_time_ms(SD_RECOVER_MS);
+    set_playing(false);
+}
+
+/* ------------------------------------------------------------------ */
+
 static void next_track(void)
 {
     play_order_next(&s_order);
@@ -399,7 +560,11 @@ static void prev_track(void)
 static void set_playing(bool on)
 {
     if (on && !s_have_track) {
+        printf("play ignorato: nessun brano aperto\n");
         return;                       /* niente da suonare */
+    }
+    if (on != s_playing) {
+        printf(on ? "play\n" : "pausa\n");
     }
     s_playing = on;
     audio_i2s_set_enabled(on);        /* pausa istantanea */
@@ -454,11 +619,11 @@ static void process_commands(void)
 /* Pubblicazione dello stato verso core0                               */
 /* ------------------------------------------------------------------ */
 
-static void publish(sd_status_t sd_status, bool ready)
+static void publish(void)
 {
     critical_section_enter_blocking(&g_shared.lock);
-    g_shared.sd_status      = sd_status;
-    g_shared.ready          = ready;
+    g_shared.sd_status      = s_sd_status;
+    g_shared.ready          = s_ready;
     g_shared.playing        = s_playing;
     g_shared.shuffle        = play_order_is_shuffle(&s_order);
     g_shared.playlist_index = (uint16_t)s_playlist_index;
@@ -585,6 +750,69 @@ static void scan_playlists(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Modo test audio                                                     */
+/* ------------------------------------------------------------------ */
+
+/* Genera un tono continuo e lo manda all'I2S. Nessun accesso alla SD, nessuna
+ * decodifica: se qui non esce suono, il guasto e' a valle del Pico.
+ *
+ * Onda triangolare invece che sinusoide: si sente altrettanto bene, non serve
+ * ne' una tabella ne' la virgola mobile, e il Cortex-M0+ ringrazia.
+ * Non ritorna mai. */
+static void selftest_run(void)
+{
+    /* Accumulatore di fase a 32 bit: l'incremento e' (freq / rate) scalato a
+     * 2^32, cosi' il wrap-around a 32 bit fa da modulo periodo gratis. */
+    const uint32_t inc = (uint32_t)(((uint64_t)PP_SELFTEST_TONE_HZ << 32) /
+                                    AUDIO_SAMPLE_FREQ);
+    uint32_t phase = 0;
+
+    printf("MODO TEST AUDIO: tono a %d Hz, la microSD non viene toccata.\n",
+           PP_SELFTEST_TONE_HZ);
+    printf("Se non senti nulla il problema e' fra il Pico e le cuffie:\n");
+    printf("  - BCK=GP%d LCK=GP%d DIN=GP%d, SCK del DAC a GND\n",
+           PIN_I2S_BCK, PIN_I2S_LCK, PIN_I2S_DIN);
+    printf("  - PCM5102: XSMT deve stare ALTO, altrimenti e' in soft mute\n");
+
+    /* SD_STATUS_OK non e' una bugia utile a nascondere un errore: qui la SD
+     * non viene proprio interrogata, e senza questo la mascotte mostrerebbe la
+     * faccia di errore. Che siamo in modo test lo dice la scritta sul display. */
+    s_sd_status = SD_STATUS_OK;
+    s_ready     = true;
+    s_playing   = true;
+    publish();
+
+    audio_i2s_set_enabled(true);
+
+    absolute_time_t next_publish = make_timeout_time_ms(50);
+
+    for (;;) {
+        audio_buffer_t *b = take_audio_buffer(s_pool, false);
+        if (b) {
+            int16_t *dst = (int16_t *)b->buffer->bytes;
+            for (uint32_t i = 0; i < b->max_sample_count; i++) {
+                uint32_t p = phase >> 16;             /* 0..65535 */
+                int32_t  v = (p < 32768u) ? ((int32_t)p * 2 - 32768)
+                                          : (98303 - (int32_t)p * 2);
+                v = (v * s_gain) >> 8;                /* rispetta il volume */
+                dst[i * 2]     = (int16_t)v;
+                dst[i * 2 + 1] = (int16_t)v;
+                phase += inc;
+            }
+            b->sample_count = b->max_sample_count;
+            give_audio_buffer(s_pool, b);
+        } else {
+            busy_wait_us(200);
+        }
+
+        if (time_reached(next_publish)) {
+            publish();                 /* raccoglie i cambi di volume */
+            next_publish = make_timeout_time_ms(50);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Entry point di core1                                                */
 /* ------------------------------------------------------------------ */
 
@@ -596,7 +824,16 @@ void player_core1_main(void)
     /* 1. Audio per primo: cosi' si prende il canale DMA 0 e la sua IRQ
      *    (DMA_IRQ_0) prima che il driver SD si prenda i canali liberi. */
     if (!audio_init()) {
-        printf("init audio fallito\n");
+        printf("init audio FALLITO\n");
+    } else {
+        printf("audio ok: I2S su BCK=GP%d LCK=GP%d DIN=GP%d, %d buffer da %d frame\n",
+               PIN_I2S_BCK, PIN_I2S_LCK, PIN_I2S_DIN,
+               AUDIO_BUFFER_COUNT, AUDIO_BUFFER_FRAMES);
+    }
+
+    /* Modo test audio: si ferma qui, senza mai toccare la microSD. */
+    if (g_shared.selftest) {
+        selftest_run();      /* non ritorna */
     }
 
     /* 2. Il driver SD va su DMA_IRQ_1, per non litigare con l'audio.
@@ -606,9 +843,11 @@ void player_core1_main(void)
     set_spi_dma_irq_channel(true, true);
 
     bool sd_ok = sd_init_driver() && playlist_mount();
+    printf("microSD: %s\n", sd_ok ? "montata" : "MOUNT FALLITO");
 
     if (sd_ok) {
         scan_playlists();
+        printf("playlist trovate: %u\n", (unsigned)g_shared.playlist_count);
     }
 
     s_dec = MP3InitDecoder();
@@ -621,7 +860,16 @@ void player_core1_main(void)
         load_playlist(0);
     }
 
-    publish(sd_ok ? SD_STATUS_OK : SD_STATUS_ERROR, true);
+    /* Il mount puo' riuscire e le letture no (scheda al limite): senza questo
+     * lo stato resterebbe "OK" e il ritentativo periodico non partirebbe mai. */
+    if (s_io_error) {
+        printf("microSD montata ma illeggibile\n");
+        sd_ok = false;
+    }
+
+    s_sd_status = sd_ok ? SD_STATUS_OK : SD_STATUS_ERROR;
+    s_ready     = true;
+    publish();
 
     absolute_time_t next_publish = make_timeout_time_ms(50);
 
@@ -633,12 +881,23 @@ void player_core1_main(void)
                 MP3FrameInfo fi;
                 int samples = decode_frame(&fi);
                 if (samples < 0) {
-                    /* Fine brano: si passa al successivo, e in fondo alla
-                     * playlist si ricomincia dal primo (loop semplice). */
-                    flush_i2s();
-                    next_track();
-                    if (!s_have_track) {
-                        set_playing(false);
+                    if (s_io_error) {
+                        /* Non e' la fine del brano: la scheda ha smesso di
+                         * rispondere. Proviamo a rimetterla in piedi e a
+                         * riprendere da dove eravamo. */
+                        on_io_error();
+                    } else {
+                        /* Fine brano: si passa al successivo, e in fondo alla
+                         * playlist si ricomincia dal primo (loop semplice). */
+                        flush_i2s();
+                        next_track();
+                        if (!s_have_track) {
+                            if (s_io_error) {
+                                on_io_error();
+                            } else {
+                                set_playing(false);
+                            }
+                        }
                     }
                 } else if (samples > 0) {
                     s_pcm_chans  = fi.nChans > 0 ? fi.nChans : 2;
@@ -655,6 +914,17 @@ void player_core1_main(void)
                 feed_i2s();
             }
         } else {
+            /* Scheda dichiarata guasta: ritentiamo con calma. Se torna (falso
+             * contatto, calo di alimentazione) il player riparte da solo,
+             * invece di restare congelato su 0:00 / 0:00 fino al reboot. */
+            if (s_sd_status == SD_STATUS_ERROR && time_reached(s_next_recover)) {
+                if (recover_full()) {
+                    printf("microSD tornata disponibile\n");
+                    s_sd_status = SD_STATUS_OK;
+                } else {
+                    s_next_recover = make_timeout_time_ms(SD_RECOVER_MS);
+                }
+            }
             /* In pausa non c'e' nulla da decodificare. busy_wait_us e non
              * sleep_ms: quest'ultima si appoggia all'alarm pool di default,
              * che vive su core0. */
@@ -662,7 +932,7 @@ void player_core1_main(void)
         }
 
         if (time_reached(next_publish)) {
-            publish(sd_ok ? SD_STATUS_OK : SD_STATUS_ERROR, true);
+            publish();
             next_publish = make_timeout_time_ms(50);
         }
     }

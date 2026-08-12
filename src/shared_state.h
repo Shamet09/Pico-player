@@ -66,6 +66,11 @@ typedef struct {
 
     /* --- scritto da core0, letto da core1 ------------------------------- */
     uint8_t volume;               /* 0..100 */
+
+    /* Modo test audio: deciso da core0 leggendo MENU all'accensione, PRIMA di
+     * lanciare core1. Dopo il lancio nessuno lo scrive piu', quindi entrambi i
+     * core possono leggerlo senza sincronizzazione. Vedi config.h. */
+    bool selftest;
 } shared_state_t;
 
 extern shared_state_t g_shared;

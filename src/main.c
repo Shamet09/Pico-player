@@ -5,6 +5,7 @@
  */
 #include <stdio.h>
 
+#include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
 #include "pico/multicore.h"
@@ -42,6 +43,8 @@ int main(void)
 
     stdio_init_all();
     printf("\nPicoPlayer\n");
+    printf("clk_sys %lu Hz, SD %lu Hz\n",
+           (unsigned long)clock_get_hz(clk_sys), (unsigned long)SD_BAUD_RATE);
 
     pp_shared_init();
 
@@ -53,6 +56,16 @@ int main(void)
     buttons_init();
     battery_init();
     ui_init(&s_oled);
+
+    /* MENU tenuto premuto all'accensione = modo test audio: core1 salta SD e
+     * decodifica e manda all'I2S un tono fisso (vedi config.h).
+     * I pull-up appena attivati da buttons_init() hanno bisogno di qualche
+     * millisecondo per portare a livello alto un pin non premuto. */
+    sleep_ms(10);
+    g_shared.selftest = !gpio_get(PIN_BTN_MENU);
+    if (g_shared.selftest) {
+        printf("MENU premuto all'avvio -> modo test audio\n");
+    }
 
     /* Da qui in poi core1 e' l'unico a toccare la SD e FatFs. */
     multicore_launch_core1(player_core1_main);

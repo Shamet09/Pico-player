@@ -24,7 +24,23 @@
 #define PIN_SD_CS            9
 #define PIN_SD_SCK           10
 #define PIN_SD_MOSI          11
-#define SD_BAUD_RATE         (12500 * 1000)
+/* 6,25 MHz invece dei 12,5 MHz iniziali. Su cavetti dupont e breadboard
+ * 12,5 MHz sono al limite: il CRC del driver intercetta il disturbo e la
+ * lettura fallisce, in modo apparentemente casuale. Di banda ne avanza
+ * comunque tantissimo: un MP3 a 320 kbps vuole 40 KB/s, qui ce ne sono
+ * centinaia. Se la SD dovesse dare ancora problemi, scendere a 4000*1000. */
+#define SD_BAUD_RATE         (6250 * 1000)
+
+/* Recupero dagli errori di I/O della SD (vedi player.c).
+ * SD_IO_RETRIES  : riletture dello stesso blocco prima di dichiarare guasto.
+ * SD_RECOVER_MS  : intervallo fra due tentativi di rimontare la scheda.
+ * SD_OPEN_TRIES  : quante tracce provare ad aprire prima di arrendersi. Con la
+ *                  SD guasta ogni f_open puo' costare fino a un secondo di
+ *                  timeout: provarle tutte e 200 bloccherebbe il player per
+ *                  minuti, con lo schermo fermo. */
+#define SD_IO_RETRIES        3
+#define SD_RECOVER_MS        2000
+#define SD_OPEN_TRIES        8
 
 /* DAC PCM5102 su I2S (PIO).
  * LCK deve essere BCK+1: e' un requisito di pico_audio_i2s
@@ -76,6 +92,20 @@
 #define AUDIO_BUFFER_COUNT   4       /* ~104 ms di coda a 44.1 kHz        */
 #define AUDIO_DMA_CHANNEL    0       /* canale DMA riservato all'I2S      */
 #define AUDIO_PIO_SM         0
+
+/* ------------------------------------------------------------------ */
+/* Modo test audio                                                     */
+/* ------------------------------------------------------------------ */
+/* Tenendo premuto MENU all'accensione il firmware NON tocca la microSD e non
+ * decodifica nulla: manda all'I2S un tono continuo generato al volo. Serve a
+ * separare due guasti che dall'esterno si assomigliano:
+ *
+ *   tono si sente  -> I2S, PIO, DMA e DAC funzionano: il problema sta a monte
+ *                     (SD, decodifica, catena dei buffer).
+ *   tono NON si sente -> il problema e' a valle del Pico: cablaggio BCK/LCK/DIN,
+ *                     SCK del DAC non a massa, alimentazione, oppure il pin
+ *                     XSMT del PCM5102 tenuto basso (= soft mute). */
+#define PP_SELFTEST_TONE_HZ  440
 
 /* Volume: 0..100, passo base 5, con accelerazione durante l'hold. */
 #define VOLUME_DEFAULT       60

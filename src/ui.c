@@ -33,6 +33,7 @@ typedef struct {
     uint16_t    tr_index, tr_prev, tr_next, tr_count;
     uint32_t    elapsed, duration;
     uint8_t     volume;
+    bool        selftest;
     char        track[PP_NAME_LEN];
     char        track_prev[PP_NAME_LEN];
     char        track_next[PP_NAME_LEN];
@@ -88,6 +89,7 @@ static void snapshot(void)
     s_snap.elapsed  = g_shared.elapsed_sec;
     s_snap.duration = g_shared.duration_sec;
     s_snap.volume   = g_shared.volume;
+    s_snap.selftest = g_shared.selftest;
 
     s_snap.track[0] = s_snap.track_prev[0] = s_snap.track_next[0] = '\0';
     if (s_snap.tr_count > 0) {
@@ -319,7 +321,13 @@ static void draw_home(mascot_frame_t frame)
 
     ssd1306_hline(s_d, 0, 18, OLED_WIDTH, true);
 
-    if (s_snap.sd == SD_STATUS_ERROR) {
+    if (s_snap.selftest) {
+        char tone[24];
+        snprintf(tone, sizeof(tone), "tono %d Hz", PP_SELFTEST_TONE_HZ);
+        ssd1306_text(s_d, 0, 24, "TEST AUDIO", true);
+        ssd1306_text(s_d, 0, 34, tone, true);
+        ssd1306_text(s_d, 0, 44, "SD non usata", true);
+    } else if (s_snap.sd == SD_STATUS_ERROR) {
         ssd1306_text(s_d, 0, 24, "SD assente o", true);
         ssd1306_text(s_d, 0, 34, "non leggibile", true);
     } else if (!s_snap.ready) {
