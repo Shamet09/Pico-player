@@ -64,6 +64,23 @@ non sono stati saldati (com'e' spesso di fabbrica) i quattro pin sono liberi.
 ambigua. Gli altri tre pin (FLT, DEMP, FMT) vanno bene bassi o flottanti, e in
 pratica non danno problemi.
 
+I 3,3 V si prendono indifferentemente da `A3V3` (due piazzole piu' giu' sulla
+stessa fila, e' il rail del regolatore a bordo del modulo) o dal 3V3 del Pico
+(pin 36). Mai 5 V. Nessuna resistenza in serie: XSMT e' un ingresso CMOS ad
+alta impedenza.
+
+Va **saldato**: sono fori metallizzati senza pettine, e un filo solo infilato
+fa contatto intermittente — cioe' audio che va e viene, che confonde invece di
+chiarire. Per confermare la diagnosi prima di saldare conviene usare il modo
+test audio (sezione 7): il tono e' continuo, quindi basta tenere premuto a mano
+un filo rigido fra le due piazzole e sentire il suono comparire e sparire.
+
+Contando i fori della fila dall'alto: 1 `FLT`, 2 `DEMP`, 3 `XSMT`, 4 `FMT`,
+5 `A3V3`, 6 `AGND`. Fra XSMT e A3V3 c'e' quindi `FMT`, che il filo deve
+scavalcare senza toccare: se FMT va alto il DAC passa a formato left-justified
+e il suono esce sbagliato invece che assente. E subito dopo A3V3 c'e' `AGND`:
+un ponte fra quei due e' un corto sull'alimentazione.
+
 **Perche' la seriale non e' su GP0/GP1** (dove il Pico SDK la mette di default):
 quei pin sono occupati dall'I2C dell'OLED. E' stata spostata su GP12/GP13, che
 il progetto non usa. La stdio su USB e' disattivata di proposito: richiederebbe
